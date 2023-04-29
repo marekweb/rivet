@@ -1,0 +1,13 @@
+{
+    "scripts": {
+        "dev": "parcel index.html",
+        "build": "parcel build index.html",
+        "typecheck": "tsc *.ts --noEmit",
+        "format": "prettier --write '**.{ts,html}'"
+    },
+    "devDependencies": {
+        "parcel": "^2.8.3",
+        "prettier": "^2.8.8",
+        "typescript": "^5.0.4"
+    }
+}
