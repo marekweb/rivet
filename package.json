@@ -2,12 +2,18 @@
     "scripts": {
         "dev": "parcel index.html",
         "build": "parcel build index.html",
+        "test": "tsx --test '**/*.test.ts'",
         "typecheck": "tsc *.ts --noEmit",
-        "format": "prettier --write '**.{ts,html}'"
+        "fix": "biome check --write --unsafe .",
+        "check": "npm run typecheck && biome check"
     },
     "devDependencies": {
-        "parcel": "^2.8.3",
-        "prettier": "^2.8.8",
-        "typescript": "^5.0.4"
+        "@biomejs/biome": "1.9.4",
+        "@types/node": "^24.10.0",
+        "@types/wicg-file-system-access": "^2023.10.6",
+        "canvas": "^3.2.0",
+        "parcel": "^2.14.4",
+        "tsx": "^4.20.6",
+        "typescript": "^5.8.3"
     }
 }

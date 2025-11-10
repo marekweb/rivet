@@ -1,43 +1,84 @@
-import { BitmapFont } from "./load-font";
+import { type BinaryBitmap, renderBitmapToCanvas } from "./bitmap";
+import { type BinaryFont, loadBinaryFrontFromDiskFormat } from "./load-font";
+import { loadBinaryDataFromLocalStorage } from "./local-storage";
 import { Manager } from "./manager";
-import { Point, Rect, isInRect } from "./rect";
-import { CanvasScreen, WindowsInterfaceDrawer } from "./screen";
+import { type Point } from "./rect";
+import {
+  CanvasScreen,
+  WindowsInterfaceDrawer,
+  black,
+  darkGray,
+} from "./screen";
 
 const SCALE_FACTOR = 2;
-export const WIDTH = 320;
-export const HEIGHT = 200;
+export const WIDTH = 256;
+export const HEIGHT = 192;
 
 export interface SystemContextObject {
   screen: CanvasScreen;
   drawer: WindowsInterfaceDrawer;
   screenWidth: number;
   screenHeight: number;
-  addClickArea: (
-    rect: Rect,
-    callback: (location: Point, absoluteLocation: Point) => void
-  ) => void;
   manager: Manager;
+  font: BinaryFont;
 }
 
 export type ApplicationFunction = (context: SystemContextObject) => {
   draw: (mouseLocation: Point, mouseDownLocation?: Point) => void;
 };
 
+// Retro 90s GUI style cursor palette (4 colors for 2bpp)
+const CURSOR_PALETTE: [number, number, number][] = [
+  [255, 255, 255], // White
+  [0, 0, 0], // Black
+  [128, 128, 128], // Gray
+  [0, 0, 0], // Black (duplicate)
+];
+
 export function init(
-  canvasElementId = "screen",
+  canvasElementId: string,
   application: ApplicationFunction,
-  font: BitmapFont
+  fallbackFont?: BinaryFont,
+  cursorBitmap?: BinaryBitmap
 ) {
   const canvas = document.getElementById(canvasElementId) as HTMLCanvasElement;
   canvas.style.width = `${WIDTH * SCALE_FACTOR}px`;
   canvas.style.height = `${HEIGHT * SCALE_FACTOR}px`;
   canvas.width = WIDTH;
   canvas.height = HEIGHT;
-  const ctx = canvas.getContext("2d")!;
-  const screen = new CanvasScreen(ctx);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("Could not get canvas context");
+  }
 
-  const drawer = new WindowsInterfaceDrawer(ctx, font);
+  // Create virtual canvas for UI content
+  const virtualCanvas = document.createElement("canvas");
+  virtualCanvas.width = WIDTH;
+  virtualCanvas.height = HEIGHT;
+  const virtualCtx = virtualCanvas.getContext("2d");
+  if (!virtualCtx) {
+    throw new Error("Could not get virtual canvas context");
+  }
+
+  const screen = new CanvasScreen(virtualCtx);
+
+  let binaryFont: BinaryFont | undefined;
+  const savedFontBinary = loadBinaryDataFromLocalStorage("font");
+  if (savedFontBinary) {
+    binaryFont = loadBinaryFrontFromDiskFormat(savedFontBinary);
+  }
+  if (!binaryFont) {
+    if (fallbackFont) {
+      binaryFont = fallbackFont;
+    } else {
+      alert("Please load a font.");
+      throw new Error("No font loaded. Please load a font from the menu.");
+    }
+  }
+
+  const drawer = new WindowsInterfaceDrawer(virtualCtx, binaryFont);
   let mouseLocation = { x: 0, y: 0 };
+  let previousMouseLocation = { x: 0, y: 0 };
   let mouseDownLocation: { x: number; y: number } | undefined;
 
   const manager = new Manager(drawer);
@@ -49,28 +90,64 @@ export function init(
     return { x, y };
   }
 
-  const clickAreas: {
-    rect: Rect;
-    callback: (location: Point, absoluteLocation: Point) => void;
-  }[] = [];
-
-  function addClickArea(rect, callback) {
-    clickAreas.push({ rect, callback });
-  }
-
   const contextObject: SystemContextObject = {
     screen,
     drawer,
-    addClickArea,
     screenHeight: HEIGHT,
     screenWidth: WIDTH,
     manager,
+    font: binaryFont,
   };
   const { draw: applicationDraw } = application(contextObject);
 
-  function draw() {
-    applicationDraw(mouseLocation, mouseDownLocation);
+  // Render cursor to canvas for blitting (with transparency)
+  let cursorCanvas: HTMLCanvasElement | undefined;
+  if (cursorBitmap) {
+    cursorCanvas = renderBitmapToCanvas(cursorBitmap, CURSOR_PALETTE, 0); // 0 = transparent
   }
+
+  // Track if UI needs redrawing
+  let uiDirty = true;
+
+  function drawUI() {
+    // Clear virtual canvas
+    virtualCtx?.clearRect(0, 0, WIDTH, HEIGHT);
+
+    // Draw application UI to virtual canvas
+    applicationDraw(mouseLocation, mouseDownLocation);
+
+    // If a modal is present, draw it on top of the application
+    const modalWidget = manager.getModalWidget();
+    if (modalWidget) {
+      // Draw dimmed overlay (transparent dither - only pattern color, no background fill)
+      screen.drawDitheredRect(0, 0, WIDTH, HEIGHT, black);
+
+      const modalDrawer = new WindowsInterfaceDrawer(virtualCtx!, binaryFont);
+      modalWidget.delegateDraw(modalDrawer);
+    }
+
+    uiDirty = false;
+  }
+
+  function drawCursor() {
+    // Copy virtual canvas to real canvas
+    ctx?.clearRect(0, 0, WIDTH, HEIGHT);
+    ctx?.drawImage(virtualCanvas, 0, 0);
+
+    // Draw cursor on real canvas if available
+    if (cursorCanvas) {
+      ctx?.drawImage(cursorCanvas, mouseLocation.x, mouseLocation.y);
+    }
+  }
+
+  function draw() {
+    if (uiDirty) {
+      drawUI();
+    }
+    drawCursor();
+  }
+
+  // Initial draw
   draw();
 
   canvas.addEventListener("mousedown", (event) => {
@@ -83,21 +160,23 @@ export function init(
       event: "down",
     });
 
+    uiDirty = true;
     draw();
   });
 
   canvas.addEventListener("mousemove", (event) => {
+    previousMouseLocation = { ...mouseLocation };
     mouseLocation = getScreenCoordinates(event);
 
     manager.emitEvent({
       type: "mouse",
       location: mouseLocation,
-      button: event.button,
+      previousLocation: previousMouseLocation,
       event: "move",
     });
-    setTimeout(() => {
-      draw();
-    }, 100);
+
+    // Only redraw cursor, not full UI
+    drawCursor();
   });
 
   canvas.addEventListener("mouseup", (event) => {
@@ -106,19 +185,6 @@ export function init(
     }
 
     const mouseUpLocation = getScreenCoordinates(event);
-    for (const { rect, callback } of clickAreas) {
-      if (
-        isInRect(mouseDownLocation, rect) &&
-        isInRect(mouseUpLocation, rect)
-      ) {
-        const relativeLocation = {
-          x: mouseUpLocation.x - rect.x,
-          y: mouseUpLocation.y - rect.y,
-        };
-        callback(relativeLocation, mouseUpLocation);
-      }
-    }
-
     mouseDownLocation = undefined;
 
     manager.emitEvent({
@@ -128,6 +194,29 @@ export function init(
       event: "up",
     });
 
+    uiDirty = true;
+    draw();
+  });
+
+  window.addEventListener("keydown", (event) => {
+    manager.emitEvent({
+      type: "key",
+      key: event.keyCode,
+      event: "down",
+    });
+
+    const printable =
+      event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
+
+    if (printable) {
+      manager.emitEvent({
+        type: "typed",
+        char: event.key,
+      });
+      event.preventDefault();
+    }
+
+    uiDirty = true;
     draw();
   });
 }

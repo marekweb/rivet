@@ -1,0 +1,7 @@
+{
+  "extends": "@parcel/config-default",
+  "transformers": {
+    "*.bitmap": ["@parcel/transformer-raw"],
+    "*.fontbin": ["@parcel/transformer-raw"]
+  }
+}
